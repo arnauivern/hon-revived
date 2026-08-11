@@ -45,10 +45,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, data={**entry.data, CONF_REFRESH_TOKEN: hon.api.auth.refresh_token}
     )
 
+#AIO-INI  ==== INICI PARXE HOME ASSISTANT 2026 ====
+
+    async def _async_update_data() -> dict[str, Any]:
+        """Dummy update method.
+
+        Les actualitzacions arriben via subscribe_updates(), però
+        Home Assistant exigeix que el DataUpdateCoordinator tingui
+        un update_method definit.
+        """
+        return {}
+
     coordinator: DataUpdateCoordinator[dict[str, Any]] = DataUpdateCoordinator(
-        hass, _LOGGER, name=DOMAIN
+        hass,
+        _LOGGER,
+        name=DOMAIN,
+        update_method=_async_update_data,
     )
+
     hon.subscribe_updates(coordinator.async_set_updated_data)
+
+#    coordinator: DataUpdateCoordinator[dict[str, Any]] = DataUpdateCoordinator(
+#        hass, _LOGGER, name=DOMAIN
+#    )
+#    hon.subscribe_updates(coordinator.async_set_updated_data)
+#
+#AIO_FIN ==== FI PARXE HOME ASSISTANT 2026 ====
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.unique_id] = {"hon": hon, "coordinator": coordinator}
