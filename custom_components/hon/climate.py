@@ -209,72 +209,87 @@ class HonACClimateEntity(HonEntity, ClimateEntity):
         if mach not in HON_HVAC_MODE:
             return getattr(self, "_attr_hvac_mode", HVACMode.AUTO)
 
-        mode = HON_HVAC_MODE[mach]
+        # Show what the appliance really reports, not the last requested mode.
+        return HON_HVAC_MODE[mach]
 
-        if mode == HVACMode.AUTO and getattr(self, "_attr_hvac_mode", None) not in (
-            None,
-            HVACMode.OFF,
-            HVACMode.AUTO,
-        ):
-            return self._attr_hvac_mode
+    def _program_for(self, hvac_mode: HVACMode) -> str | None:
+        """Return the hOn program (iot_cool, iot_heat...) for a HVAC mode, if any."""
+        program = HON_HVAC_PROGRAM.get(hvac_mode)
+        setting = self._device.settings.get("startProgram.program")
+        if program and setting is not None and program in setting.values:
+            return program
+        return None
 
-        return mode
+    def _keep_current_value(self, key: str) -> None:
+        """Copy the appliance's current value into a startProgram parameter."""
+        current = self._device.get(key)
+        param = self._device.settings.get(f"startProgram.{key}")
+        if current is None or param is None:
+            return
+        try:
+            if isinstance(param, HonParameterRange):
+                param.value = float(current)
+            else:
+                param.value = str(int(float(current)))
+        except (ValueError, TypeError):
+            _LOGGER.debug("%s: can't keep %s=%s", self._device.nick_name, key, current)
 
-#AIO-INI
-#    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-#        self._attr_hvac_mode = hvac_mode
-#        if hvac_mode == HVACMode.OFF:
-#            await self._device.commands["stopProgram"].send()
-#            self._device.settings["settings.onOffStatus"].value = "0"
-#        else:
-#            self._device.settings["settings.onOffStatus"].value = "1"
-#            setting = self._device.settings["settings.machMode"]
-#            modes = {HON_HVAC_MODE[int(number)]: number for number in setting.values}
-#            if hvac_mode in modes:
-#                setting.value = modes[hvac_mode]
-#            else:
-#                await self.async_set_preset_mode(HON_HVAC_PROGRAM[hvac_mode])
-#                return
-#            await self._device.commands["settings"].send()
-#        self.schedule_update_ha_state()
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        self._attr_hvac_mode = hvac_mode
+        """Set HVAC mode.
 
-        has_onoff = "settings.onOffStatus" in self._device.settings
+        Haier AD50/AD71 (and probably other models) ignore onOffStatus in
+        the "settings" command, so they can only be switched on with
+        "startProgram". A program carries its own machMode, so switching on
+        with a generic program (iot_simple_start) always ends up in AUTO.
+        So: when the unit is off, start the program matching the requested
+        mode (iot_cool, iot_heat, iot_fan...), keeping the current target
+        temperature and fan speed; when it is already on, just change
+        machMode with "settings".
+        """
+        self._attr_hvac_mode = hvac_mode
 
         if hvac_mode == HVACMode.OFF:
             await self._device.commands["stopProgram"].send()
-
-            if has_onoff:
+            if "settings.onOffStatus" in self._device.settings:
                 self._device.settings["settings.onOffStatus"].value = "0"
+            self.schedule_update_ha_state()
+            return
 
-        else:
-            if has_onoff:
-                self._device.settings["settings.onOffStatus"].value = "1"
+        is_on = self._device.get("onOffStatus") == 1
+        program = self._program_for(hvac_mode)
 
-            setting = self._device.settings["settings.machMode"]
-            modes = {
-                HON_HVAC_MODE[int(number)]: number
-                for number in setting.values
-            }
+        if not is_on and program and "startProgram" in self._device.commands:
+            self._device.settings["startProgram.program"].value = program
+            self._keep_current_value("tempSel")
+            self._keep_current_value("windSpeed")
+            _LOGGER.debug(
+                "%s: switching on with program %s", self._device.nick_name, program
+            )
+            await self._device.commands["startProgram"].send()
+            self.schedule_update_ha_state()
+            return
 
-            if hvac_mode in modes:
-                setting.value = modes[hvac_mode]
-            else:
-                await self.async_set_preset_mode(HON_HVAC_PROGRAM[hvac_mode])
-                return
+        setting = self._device.settings["settings.machMode"]
+        modes = {
+            HON_HVAC_MODE[int(number)]: number
+            for number in setting.values
+            if int(number) in HON_HVAC_MODE
+        }
+        if hvac_mode not in modes:
+            if program:
+                await self.async_set_preset_mode(program)
+            return
+        setting.value = modes[hvac_mode]
+        if "settings.onOffStatus" in self._device.settings:
+            self._device.settings["settings.onOffStatus"].value = "1"
+        await self._device.commands["settings"].send()
 
+        if not is_on and "startProgram" in self._device.commands:
+            # No matching program: switch on, then re-apply the mode.
+            await self._device.commands["startProgram"].send()
             await self._device.commands["settings"].send()
-#AIO-INI STARTPROGRAM ====
-
-            if "startProgram" in self._device.commands:
-                self._device.sync_command("startProgram", "settings")
-                await self._device.commands["startProgram"].send()
-
-#AIO-FI STARTPROGRAM ====
         self.schedule_update_ha_state()
 
-#AIO-FIN
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self._device.commands["startProgram"].send()
         self._device.sync_command("startProgram", "settings")
